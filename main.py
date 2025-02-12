@@ -23,7 +23,15 @@ voltage_drop_pin = ADC(26)  # GPIO 27 за спад на напрежение в
 sensor_temp = machine.ADC(4)  # вътрешен сензор за температура
 
 # Коефиценти за ADC
-conversion_factor = 3.3 / (65535)   # коефицент за изчисляване на температура от вътрешния сензор
+min_voltage = 3.3
+max_voltage = 4.2
+min_temperature = 0
+max_temperature = 40
+current_cycle = 0
+max_cycles = 0
+save_on_cycle = 0
+active_logging = 0
+conversion_factor = min_voltage / (65535)   # коефицент за изчисляване на температура от вътрешния сензор
 
 # LED върху платката
 led = Pin("LED", Pin.OUT)
@@ -65,7 +73,7 @@ def stop_pwm_inverted(pwm):
 def read_voltage():
     raw = voltage_pin.read_u16()
     raw = raw - 416   # корекция на измерванията за точност
-    voltage = (raw / 65535.0) * 3.3 * 2  # Предполагаем делител на напрежение 1:2
+    voltage = (raw / 65535.0) * min_voltage * 2  # Предполагаем делител на напрежение 1:2
     return voltage
 
 # Функция за преобразуване на ADC стойности в ток (коригирай шунтовия резистор)
@@ -75,7 +83,7 @@ def read_current():
     raw_battery = voltage_pin.read_u16()
     raw_battery = raw_battery - 416      # калибровъчен коефицент за АЦП
     raw = raw_drop - raw_battery
-    current = ((raw / 65535.0) * 3.3 * 2)/ 0.94  # Шунтов резистор 2 x 0.47 Ом
+    current = ((raw / 65535.0) * min_voltage * 2)/ 0.94  # Шунтов резистор 2 x 0.47 Ом
     return current
 
 # Функция за контрол на LED върху платката
@@ -94,6 +102,58 @@ def read_temperature():
     temperature = 27 - (reading - 0.706)/0.001721
     return temperature
 
+def parse_command_to_array(data: bytes) -> list:
+    """
+    Parse the binary command data into an array where each element is a single byte.
+    Each element will be an integer (0-255).
+    """
+    return list(data)
+
+def merge_two_bytes(high_byte, low_byte):
+    return (high_byte << 8) | low_byte  # Shift high byte 8 bits left and OR with low byte
+
+def create_data_file():
+    """
+    Create a file named 'data.txt' in the Pico's filesystem so data can be written.
+    """
+    try:
+        with open("log.txt", "w") as f:
+            f.write("")
+        print("File 'data.txt' created successfully.")
+    except Exception as e:
+        print("Error creating file:", e)
+
+def write_to_data_file(new_line):
+    """
+    Appends a new line to 'log.txt'. 
+    If the file exceeds 500 lines, the oldest line is removed.
+    """
+    try:
+        file_path = "log.txt"
+
+        # Read existing lines
+        try:
+            with open(file_path, "r") as f:
+                lines = f.readlines()
+        except OSError:
+            lines = []  # If file doesn't exist or can't be read, start fresh
+
+        # Append the new line
+        lines.append(new_line + "\n")
+
+        # Keep only the last 500 lines
+        if len(lines) > 500:
+            lines = lines[-500:]
+
+        # Write back to file
+        with open(file_path, "w") as f:
+            f.writelines(lines)
+
+        print("New line added to 'log.txt'.")
+
+    except Exception as e:
+        print("Error writing to file:", e)
+
 # Bluetooth клас
 class BLEServer:
     def __init__(self):
@@ -103,50 +163,112 @@ class BLEServer:
         self.ble.irq(self.ble_irq)
         self.connections = set()
 
-        # Съкратени UUID
+        # Standard Battery Service UUID and Characteristic UUID
         self.battery_service_uuid = bluetooth.UUID(0x180F)  # Battery Service
-        self.battery_char_uuid = bluetooth.UUID(0x2A19)    # Battery Level Characteristic
-        
+        self.battery_char_uuid = bluetooth.UUID(0x2A19)       # Battery Level Characteristic
 
-        # Дефиниране на услуги и характеристики
+        # New Control Characteristic for triggering discharge command
+        # (Use a custom 128-bit UUID; you can choose any valid UUID)
+        self.control_char_uuid = bluetooth.UUID("00001000-0000-1000-8000-00805f9b34fb")
+
+        # Define services and characteristics:
+        # We add the control characteristic with FLAG_WRITE.
         self.services = (
             (self.battery_service_uuid, (
                 (self.battery_char_uuid, bluetooth.FLAG_READ | bluetooth.FLAG_NOTIFY),
+                (self.control_char_uuid, bluetooth.FLAG_WRITE),
             )),
         )
         
         self.handles = self.ble.gatts_register_services(self.services)
         print("Handles:", self.handles)
-        # Handles за характеристиките
+        
+        # Handles for the characteristics:
+        # Assuming the first service tuple contains two handles:
         self.battery_handle = self.handles[0][0]  # Battery Level
-        # Стартираме реклама
+        self.control_handle = self.handles[0][1]    # Control characteristic
+
+        # Start advertising
         self.start_advertising()
 
     def ble_irq(self, event, data):
         global is_connected
-        if event == 1:         # Свързване
+        if event == 1:  # Connection event
             conn_handle, _, _ = data
             self.connections.add(conn_handle)
-            is_connected = True       # Показва наличие на връзка
-        elif event == 2:       # Затваряне на връзка
+            is_connected = True
+        elif event == 2:  # Disconnection event
             conn_handle, _, _ = data
             self.connections.remove(conn_handle)
             self.start_advertising()
-            is_connected = False 
-            
+            is_connected = False
+        elif event == 3:  # Write event
+            conn_handle, attr_handle = data
+            # Check if the write was to our control characteristic
+            if attr_handle == self.control_handle:
+                value = self.ble.gatts_read(attr_handle)
+                byte_array = parse_command_to_array(value)
+                print("Control characteristic written:", byte_array)
+                # Check if the array equals [0x01, 0x42, 0x01]
+                if len(byte_array) > 1 and byte_array[0] == 0x01:
+                    print("Got byte array")
+                    if byte_array[1] == 0x41:  # Конфигуриране на минимални и максимални стойности
+                        global min_voltage, max_voltage, min_temperature, max_temperature
+                        min_voltage = int(merge_two_bytes(byte_array[2], byte_array[3]), 16) / 10
+                        max_voltage = int(merge_two_bytes(byte_array[4], byte_array[5]), 16) / 10
+                        min_temperature = int(merge_two_bytes(byte_array[10], byte_array[11]), 16) / 10
+                        max_temperature = int(merge_two_bytes(byte_array[12], byte_array[13]), 16) / 10
+                        print("Trigger command 41!")
+                    elif byte_array[1] == 0x42:  # Кодът се използва за да се изпрати нужната информация за начало на цикъл от зареждане и разреждане.
+                        global current_cycle, max_cycles   
+                        current_cycle = 0
+                        max_cycles = int(merge_two_bytes(byte_array[2], byte_array[3]), 16)
+                        print("Trigger command 42!")
+                    elif byte_array[1] == 0x43:  # Кодът се използва за да се прекрати текущия цикъл  
+                        global current_cycle, max_cycles   
+                        current_cycle = 0
+                        max_cycles = 0
+                        print("Trigger command 43!")
+                    elif byte_array[1] == 0x44:  # Заявка за превключване на режим
+                        if byte_array[2] == 0x01:
+                            stop_pwm(pwm_charge_pin)
+                            set_pwm_duty_inverted(pwm_discharge_pin, 100)
+                        else:
+                            stop_pwm(pwm_discharge_pin)
+                            set_pwm_duty_inverted(pwm_charge_pin, 100)
+                        
+                        print("Trigger command 44!")
+                    elif byte_array[1] == 0x45:  # Заявка за пазене на история на процесите
+                        global save_on_cycle, active_logging   
+                        active_logging = 1
+                        save_on_cycle = int(merge_two_bytes(byte_array[2], byte_array[3]), 16)
+                        print("Trigger command 45!")
+                    elif byte_array[1] == 0x46:  # Заявка за прочитане и визуализация на записаните данни от процесите
+                        try:
+                            with open("log.txt", "r") as f:
+                                file_content = f.read()
+                            self.send_data(file_content)
+                            print("File content sent:", file_content)
+                        except Exception as e:
+                            print("Error reading file:", e)
+
+                        print("Trigger command 46!")
+                    else:
+                        print("Received unknown command:", byte_array)
+                else:
+                    print("Received unknown command:", byte_array)
+
     def start_advertising(self):
-        payload = advertising_payload(name="PicoBatt", services=[self.battery_service_uuid]) #, self.data_service_uuid])
+        payload = advertising_payload(name="PicoBatt", services=[self.battery_service_uuid])
         self.ble.gap_advertise(100, payload)
 
     def send_data(self, data):
-        # Изпращане на Notification
+        # Send notification to all connected clients.
         for conn_handle in self.connections:
             self.ble.gatts_notify(conn_handle, self.battery_handle, data.encode('utf-8'))
 
 # Функция за изчисляване на нивото на батерията
 def calculate_battery_level(voltage):
-    min_voltage = 3.3
-    max_voltage = 4.2
     level = ((voltage - min_voltage) / (max_voltage - min_voltage)) * 100
     level = max(0, min(100, level))
     return int(level)
@@ -178,13 +300,13 @@ try:
         # зависимост от превключвателя на платката
         if mode_switch.value() == 0:  # Ключът е включен и батерията се разрежда през товарните резистори
             stop_pwm(pwm_charge_pin)                          # Изключване на ключът за зареждане
-            if voltage > 3.3:                                 # Когато напрежението е над минималното 3.3V се изпълнява разреждане
+            if voltage > min_voltage:                                 # Когато напрежението е над минималното 3.3V се изпълнява разреждане
                set_pwm_duty_inverted(pwm_discharge_pin, 100)  # Включване на ключът за разреждане, 100 е максимален ток в проценти
             else:
                set_pwm_duty_inverted(pwm_discharge_pin, 0)    # Изключване на ключът за разреждане, 0 е изключен
         else:
             stop_pwm_inverted(pwm_discharge_pin)              # Изключване на ключът за разреждане
-            if voltage > 4.2:                                 # Когато напрежението е достигнало максималното се изключва зареждането
+            if voltage > max_voltage:                                 # Когато напрежението е достигнало максималното се изключва зареждането
                set_pwm_duty(pwm_charge_pin, 0)              # Изключване на ключът за зареждане 
             else:
                set_pwm_duty(pwm_charge_pin, 100)              # Включване на ключът за зареждане 100 е максимален ток в проценти
@@ -192,7 +314,8 @@ try:
         # Подготовка на данни за клиент
         battery_level = calculate_battery_level(voltage)  # Изчисляване на нивото на батерията
         print(f"V = {voltage:.2f} V, I = {current:.2f}A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
-    
+        # TODO: Add the limit of the logs on specific cycle
+        write_to_data_file(f"V = {voltage:.2f} V, I = {current:.2f}A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
         # Запис на стойността в характеристиката
         ble_server.ble.gatts_write(ble_server.battery_handle, bytes([battery_level]))
     
