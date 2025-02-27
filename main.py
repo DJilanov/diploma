@@ -285,6 +285,11 @@ class BLEServer:
                             print("Error reading file:", e)
 
                         print("Trigger command 46!")
+                    elif byte_array[1] == 0x47:  # Заявка за получаване на текущите стойности на платката
+                        # Изпращане на данни през Bluetooth
+                        data = f"min_voltage: {min_voltage:.2f}, max_voltage: {max_voltage:.2f}, min_temperature: {min_temperature:.2f}, max_temperature: {max_temperature:.2f}, current_cycle: {current_cycle:.2f}, max_cycles: {max_cycles:.2f}, save_on_cycle: {save_on_cycle:.2f}, active_logging: {active_logging:.2f}, max_cycles: {max_cycles:.2f}"
+                        ble_server.send_data(data)
+                        print("Trigger command 47!")
                     else:
                         print("Received unknown command:", byte_array)
                 else:
@@ -345,14 +350,14 @@ try:
                 
         # Подготовка на данни за клиент
         battery_level = calculate_battery_level(voltage)  # Изчисляване на нивото на батерията
-        print(f"V = {voltage:.2f} V, I = {current:.2f}A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
+        print(f"V = {voltage:.2f} V, I = {current:.2f} A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
         # TODO: Add the limit of the logs on specific cycle
-        write_to_data_file(f"V = {voltage:.2f} V, I = {current:.2f}A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
+        write_to_data_file(f"V: {voltage:.2f}, I: {current:.2f}, Level: {battery_level:.2d}, T: {temperature:.1f}, max_cycles: {max_cycles:.2f}")
         # Запис на стойността в характеристиката
         ble_server.ble.gatts_write(ble_server.battery_handle, bytes([battery_level]))
     
         # Изпращане на данни през Bluetooth
-        data = f"V: {voltage:.2f}V, I: {current:.2f}A, L: {battery_level:.2f}%, T: {temperature:.2f}C"
+        data = f"V: {voltage:.2f}, I: {current:.2f}, L: {battery_level:.2f}, T: {temperature:.2f}"
         ble_server.send_data(data)
     
 
@@ -363,3 +368,4 @@ try:
 except KeyboardInterrupt:
     reset_gpio_pins()
     # Връщане в REPL
+
