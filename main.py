@@ -17,9 +17,27 @@ from time import sleep
 from ble_advertising import advertising_payload
 import bluetooth
 
+import machine, onewire, ds18x20
+
+# the device is on GPIO12
+ds_pin = machine.Pin(17)
+
+# create the onewire object
+ds_sensor = ds18x20.DS18X20(onewire.OneWire(ds_pin))
+
+# scan for devices on the bus
+roms = ds_sensor.scan()
+print('found devices:', roms)
+ds_sensor.convert_temp()
+#for rom in roms:
+#tempC = ds_sensor.read_temp(1)
+#print('temperature (ºC):', "{:.2f}".format(tempC))
+
+
 # Конфигурация на ADC пинове
 voltage_pin = ADC(27)  # GPIO 26 за напрежение на батерията
 voltage_drop_pin = ADC(26)  # GPIO 27 за спад на напрежение върху шунтовия резистор
+amper_pin = ADC(28) # измерване на напрежението от сензора на Lem
 sensor_temp = machine.ADC(4)  # вътрешен сензор за температура
 
 # Коефиценти за ADC
@@ -32,10 +50,11 @@ max_cycles = 0
 save_on_cycle = 0
 active_logging = 0
 conversion_factor = min_voltage / (65535)   # коефицент за изчисляване на температура от вътрешния сензор
+reference_voltage = 3.3 # референтно напрежение на ADC
 
 # LED върху платката
 led = Pin("LED", Pin.OUT)
-
+led_charge = Pin(5, Pin.OUT)
 # Таймери
 tmr_led = Timer()
 
@@ -72,18 +91,23 @@ def stop_pwm_inverted(pwm):
 # Функция за преобразуване на ADC стойности в напрежение (коригирай делителя)
 def read_voltage():
     raw = voltage_pin.read_u16()
-    raw = raw - 416   # корекция на измерванията за точност
-    voltage = (raw / 65535.0) * min_voltage * 2  # Предполагаем делител на напрежение 1:2
+    # raw = raw - 416   # корекция на измерванията за точност
+    voltage = (raw / 65535.0) * reference_voltage * 4  # Предполагаем делител на напрежение 1:4
     return voltage
 
 # Функция за преобразуване на ADC стойности в ток (коригирай шунтовия резистор)
 def read_current():
-    raw_drop = voltage_drop_pin.read_u16()
-    raw_drop = raw_drop - 416            # калибровъчен коефицент за АЦП
-    raw_battery = voltage_pin.read_u16()
-    raw_battery = raw_battery - 416      # калибровъчен коефицент за АЦП
-    raw = raw_drop - raw_battery
-    current = ((raw / 65535.0) * min_voltage * 2)/ 0.94  # Шунтов резистор 2 x 0.47 Ом
+    raw = amper_pin.read_u16()
+    raw = raw - 416   # корекция на измерванията за точност
+    current = (raw / 65535.0) * reference_voltage * 10  # Предполагаем делител на напрежение 1:2
+    
+    
+#     raw_drop = voltage_drop_pin.read_u16()
+#     raw_drop = raw_drop - 416            # калибровъчен коефицент за АЦП
+#     raw_battery = voltage_pin.read_u16()
+#     raw_battery = raw_battery - 416      # калибровъчен коефицент за АЦП
+#     raw = raw_drop - raw_battery
+#     current = ((raw / 65535.0) * min_voltage * 2)/ 0.94  # Шунтов резистор 2 x 0.47 Ом
     return current
 
 # Функция за контрол на LED върху платката
@@ -97,10 +121,15 @@ def led_blink(timer):
 
 # измерване на температура
 def read_temperature():
-    global conversion_factor
-    reading = sensor_temp.read_u16() * conversion_factor
-    temperature = 27 - (reading - 0.706)/0.001721
-    return temperature
+    global roms
+    ds_sensor.convert_temp()
+    for rom in roms:
+        tempC = ds_sensor.read_temp(rom)
+    #print('temperature (ºC):', "{:.2f}".format(tempC))
+    #global conversion_factor
+    #reading = sensor_temp.read_u16() * conversion_factor
+    #temperature = 27 - (reading - 0.706)/0.001721
+    return tempC
 
 def parse_command_to_array(data: bytes) -> list:
     """
@@ -137,6 +166,7 @@ def write_to_data_file(new_line):
                 lines = f.readlines()
         except OSError:
             lines = []  # If file doesn't exist or can't be read, start fresh
+            print("Еррор")
 
         # Append the new line
         lines.append(new_line + "\n")
@@ -146,8 +176,8 @@ def write_to_data_file(new_line):
             lines = lines[-500:]
 
         # Write back to file
-        with open(file_path, "w") as f:
-            f.writelines(lines)
+        with open(file_path, "а") as f:
+            f.write(new_line + "\n")
 
         print("New line added to 'log.txt'.")
 
@@ -233,9 +263,11 @@ class BLEServer:
                         if byte_array[2] == 0x01:
                             stop_pwm(pwm_charge_pin)
                             set_pwm_duty_inverted(pwm_discharge_pin, 100)
+                            led_charge.value(1)
                         else:
                             stop_pwm(pwm_discharge_pin)
                             set_pwm_duty_inverted(pwm_charge_pin, 100)
+                            led_charge.value(0)
                         
                         print("Trigger command 44!")
                     elif byte_array[1] == 0x45:  # Заявка за пазене на история на процесите
