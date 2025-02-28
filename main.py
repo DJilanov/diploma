@@ -350,6 +350,7 @@ try:
                 
         # Подготовка на данни за клиент
         battery_level = calculate_battery_level(voltage)  # Изчисляване на нивото на батерията
+        # ТОДО: След като батерията удари 100% ако има още цикли да превключи и започне цикъла за разреждане
         print(f"V = {voltage:.2f} V, I = {current:.2f} A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
         # TODO: Add the limit of the logs on specific cycle
         write_to_data_file(f"V: {voltage:.2f}, I: {current:.2f}, Level: {battery_level:.2d}, T: {temperature:.1f}, max_cycles: {max_cycles:.2f}")
