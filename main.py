@@ -16,8 +16,11 @@ from machine import Pin, ADC, Timer, PWM
 from time import sleep
 from ble_advertising import advertising_payload
 import bluetooth
+import time
 
 import machine, onewire, ds18x20
+
+timestamp = time.time()
 
 # the device is on GPIO12
 ds_pin = machine.Pin(17)
@@ -42,11 +45,11 @@ sensor_temp = machine.ADC(4)  # вътрешен сензор за темпер�
 
 # Коефиценти за ADC
 min_voltage = 3.3
-max_voltage = 4.2
+max_voltage = 3.9
 min_temperature = 0
 max_temperature = 40
 current_cycle = 0
-max_cycles = 0
+max_cycles = 6
 save_on_cycle = 0
 active_logging = 0
 conversion_factor = min_voltage / (65535)   # коефицент за изчисляване на температура от вътрешния сензор
@@ -334,32 +337,36 @@ try:
     
         # Управление на схема за зареждане или разреждане на батерията в
         # зависимост от превключвателя на платката
-        if mode_switch.value() == 0:  # Ключът е включен и батерията се разрежда през товарните резистори
-            stop_pwm(pwm_charge_pin)                          # Изключване на ключът за зареждане
-            if voltage > min_voltage:                                 # Когато напрежението е над минималното 3.3V се изпълнява разреждане
-               set_pwm_duty_inverted(pwm_discharge_pin, 100)  # Включване на ключът за разреждане, 100 е максимален ток в проценти
-            else:
-               set_pwm_duty_inverted(pwm_discharge_pin, 0)    # Изключване на ключът за разреждане, 0 е изключен
-        else:
-            stop_pwm_inverted(pwm_discharge_pin)              # Изключване на ключът за разреждане
-            if voltage > max_voltage:                                 # Когато напрежението е достигнало максималното се изключва зареждането
-               set_pwm_duty(pwm_charge_pin, 0)              # Изключване на ключът за зареждане 
-            else:
-               set_pwm_duty(pwm_charge_pin, 100)              # Включване на ключът за зареждане 100 е максимален ток в проценти
+        # if mode_switch.value() == 0:  # Ключът е включен и батерията се разрежда през товарните резистори
+        #     stop_pwm(pwm_charge_pin)                          # Изключване на ключът за зареждане
+        #     if voltage > min_voltage:                                 # Когато напрежението е над минималното 3.3V се изпълнява разреждане
+        #        set_pwm_duty_inverted(pwm_discharge_pin, 100)  # Включване на ключът за разреждане, 100 е максимален ток в проценти
+        #     else:
+        #        set_pwm_duty_inverted(pwm_discharge_pin, 0)    # Изключване на ключът за разреждане, 0 е изключен
+        # else:
+        #     stop_pwm_inverted(pwm_discharge_pin)              # Изключване на ключът за разреждане
+        #     if voltage > max_voltage:                                 # Когато напрежението е достигнало максималното се изключва зареждането
+        #        set_pwm_duty(pwm_charge_pin, 0)              # Изключване на ключът за зареждане 
+        #     else:
+        #        set_pwm_duty(pwm_charge_pin, 100)              # Включване на ключът за зареждане 100 е максимален ток в проценти
                 
         # Подготовка на данни за клиент
         battery_level = calculate_battery_level(voltage)  # Изчисляване на нивото на батерията
         if current_cycle < max_cycles:
-            if battery_level == 100:
+            if battery_level > 99:
+                print("--HIT1; ", battery_level)
                 stop_pwm(pwm_charge_pin)
                 set_pwm_duty_inverted(pwm_discharge_pin, 100)
                 led_charge.value(1)
-            elif battery_level == 0:
-                stop_pwm(pwm_discharge_pin)
-                set_pwm_duty_inverted(pwm_charge_pin, 100)
+            elif battery_level < 1:
+                print("--HIT2; ", battery_level)
+                stop_pwm_inverted(pwm_discharge_pin)
+                set_pwm_duty(pwm_charge_pin, 100)  
                 led_charge.value(0)
+                
+            
         # Лог да знаем как вървят данните
-        # print(f"V = {voltage:.2f} V, I = {current:.2f} A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
+        print(f"V = {voltage:.2f} V, I = {current:.2f} A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
         # TODO: Add the limit of the logs on specific cycle
         write_to_data_file(f"V: {voltage:.2f}, I: {current:.2f}, Level: {battery_level:.2d}, T: {temperature:.1f}, max_cycles: {max_cycles:.2f}")
         # Запис на стойността в характеристиката
@@ -377,4 +384,3 @@ try:
 except KeyboardInterrupt:
     reset_gpio_pins()
     # Връщане в REPL
-
