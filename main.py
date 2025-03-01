@@ -179,7 +179,7 @@ def write_to_data_file(new_line):
         with open(file_path, "а") as f:
             f.write(new_line + "\n")
 
-        print("New line added to 'log.txt'.")
+        # print("New line added to 'log.txt'.")
 
     except Exception as e:
         print("Error writing to file:", e)
@@ -196,17 +196,14 @@ class BLEServer:
         # Standard Battery Service UUID and Characteristic UUID
         self.battery_service_uuid = bluetooth.UUID(0x180F)  # Battery Service
         self.battery_char_uuid = bluetooth.UUID(0x2A19)       # Battery Level Characteristic
-
-        # New Control Characteristic for triggering discharge command
-        # (Use a custom 128-bit UUID; you can choose any valid UUID)
-        self.control_char_uuid = bluetooth.UUID("00001000-0000-1000-8000-00805f9b34fb")
+        self.char_1000_uuid = bluetooth.UUID(1000)  # Custom Characteristic (1000)
 
         # Define services and characteristics:
         # We add the control characteristic with FLAG_WRITE.
         self.services = (
             (self.battery_service_uuid, (
                 (self.battery_char_uuid, bluetooth.FLAG_READ | bluetooth.FLAG_NOTIFY),
-                (self.control_char_uuid, bluetooth.FLAG_WRITE),
+                (self.char_1000_uuid, bluetooth.FLAG_WRITE | bluetooth.FLAG_READ),
             )),
         )
         
@@ -216,13 +213,15 @@ class BLEServer:
         # Handles for the characteristics:
         # Assuming the first service tuple contains two handles:
         self.battery_handle = self.handles[0][0]  # Battery Level
-        self.control_handle = self.handles[0][1]    # Control characteristic
+        self.char_1000_handle = self.handles[0][1]  # Handle за характеристиката
 
         # Start advertising
         self.start_advertising()
 
     def ble_irq(self, event, data):
         global is_connected
+        print("Event:", event)
+        print("data:", data)
         if event == 1:  # Connection event
             conn_handle, _, _ = data
             self.connections.add(conn_handle)
@@ -235,7 +234,7 @@ class BLEServer:
         elif event == 3:  # Write event
             conn_handle, attr_handle = data
             # Check if the write was to our control characteristic
-            if attr_handle == self.control_handle:
+            if attr_handle == self.char_1000_handle:
                 value = self.ble.gatts_read(attr_handle)
                 byte_array = parse_command_to_array(value)
                 print("Control characteristic written:", byte_array)
@@ -360,7 +359,7 @@ try:
                 set_pwm_duty_inverted(pwm_charge_pin, 100)
                 led_charge.value(0)
         # Лог да знаем как вървят данните
-        print(f"V = {voltage:.2f} V, I = {current:.2f} A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
+        # print(f"V = {voltage:.2f} V, I = {current:.2f} A, Level = {battery_level:.2d} %, T = {temperature:.1f} ॰C")
         # TODO: Add the limit of the logs on specific cycle
         write_to_data_file(f"V: {voltage:.2f}, I: {current:.2f}, Level: {battery_level:.2d}, T: {temperature:.1f}, max_cycles: {max_cycles:.2f}")
         # Запис на стойността в характеристиката
